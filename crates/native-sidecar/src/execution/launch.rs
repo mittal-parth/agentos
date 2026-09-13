@@ -30,7 +30,7 @@ const DEFAULT_ALLOWED_NODE_BUILTINS: &[&str] = &[
 const EXECUTION_REQUEST_TTY_ENV: &str = "AGENTOS_EXEC_TTY";
 
 fn resolve_execute_request(
-    vm: &VmState,
+    vm: &mut VmState,
     payload: &ExecuteRequest,
 ) -> Result<ResolvedChildProcessExecution, SidecarError> {
     let payload_env: BTreeMap<String, String> = payload
@@ -103,7 +103,7 @@ fn resolve_execute_request(
 }
 
 fn resolve_command_execution(
-    vm: &VmState,
+    vm: &mut VmState,
     command: &str,
     args: &[String],
     extra_env: &BTreeMap<String, String>,
@@ -340,7 +340,7 @@ fn resolve_command_execution(
 
     let host_entrypoint = resolve_vm_guest_path_to_host(vm, &guest_entrypoint);
     if let Some((javascript_guest_entrypoint, javascript_host_entrypoint)) =
-        resolve_javascript_command_entrypoint(vm, &guest_entrypoint, &host_entrypoint)
+        resolve_javascript_command_entrypoint(vm, &guest_entrypoint, &host_entrypoint)?
     {
         prepare_guest_runtime_env(
             vm,
@@ -392,33 +392,135 @@ fn resolve_command_execution(
 const MAX_JAVASCRIPT_COMMAND_REDIRECT_DEPTH: usize = 4;
 
 pub(super) fn resolve_javascript_command_entrypoint(
-    vm: &VmState,
+    vm: &mut VmState,
     guest_entrypoint: &str,
     host_entrypoint: &Path,
-) -> Option<(String, PathBuf)> {
-    // agentOS package content is served guest-native (tar + single-symlink
-    // mounts) and is never materialized on the host, so the shebang-reading
-    // fallback below (which reads the host path) cannot classify these
-    // entrypoints. Within the package mount the only runtimes are WebAssembly
-    // (`*.wasm`) and JavaScript, and `bin/<cmd>` launchers are frequently
-    // extensionless — so classify by extension here: `.wasm` is WASM (fall
-    // through), everything else in the mount is JavaScript.
+) -> Result<Option<(String, PathBuf)>, SidecarError> {
     if guest_path_is_within_agentos_package_mount(vm, guest_entrypoint) {
-        let extension = Path::new(guest_entrypoint)
-            .extension()
-            .and_then(|extension| extension.to_str());
-        if extension != Some("wasm") {
-            return Some((guest_entrypoint.to_owned(), host_entrypoint.to_path_buf()));
-        }
-        return None;
+        return classify_agentos_package_javascript_entrypoint(
+            vm,
+            guest_entrypoint,
+            MAX_JAVASCRIPT_COMMAND_REDIRECT_DEPTH,
+        );
     }
 
-    resolve_javascript_command_entrypoint_inner(
+    Ok(resolve_javascript_command_entrypoint_inner(
         vm,
         guest_entrypoint,
         host_entrypoint,
         MAX_JAVASCRIPT_COMMAND_REDIRECT_DEPTH,
-    )
+    ))
+}
+
+enum PackageNativeBinaryFormat {
+    Elf,
+    MachO,
+    PeCoff,
+}
+
+impl PackageNativeBinaryFormat {
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::Elf => "ELF",
+            Self::MachO => "Mach-O",
+            Self::PeCoff => "PE/COFF",
+        }
+    }
+}
+
+fn detect_package_native_binary_format(header: &[u8]) -> Option<PackageNativeBinaryFormat> {
+    if header.len() >= 4 && &header[..4] == b"\x7fELF" {
+        return Some(PackageNativeBinaryFormat::Elf);
+    }
+    if header.starts_with(b"MZ") {
+        return Some(PackageNativeBinaryFormat::PeCoff);
+    }
+    const MACH_O_MAGICS: [&[u8; 4]; 6] = [
+        b"\xfe\xed\xfa\xce",
+        b"\xce\xfa\xed\xfe",
+        b"\xfe\xed\xfa\xcf",
+        b"\xcf\xfa\xed\xfe",
+        b"\xca\xfe\xba\xbe",
+        b"\xbe\xba\xfe\xca",
+    ];
+    if header.len() >= 4 && MACH_O_MAGICS.iter().any(|magic| header[..4] == magic[..]) {
+        return Some(PackageNativeBinaryFormat::MachO);
+    }
+    None
+}
+
+fn classify_agentos_package_javascript_entrypoint(
+    vm: &mut VmState,
+    guest_entrypoint: &str,
+    redirects_remaining: usize,
+) -> Result<Option<(String, PathBuf)>, SidecarError> {
+    let resolved_guest = vm
+        .kernel
+        .realpath(guest_entrypoint)
+        .map_err(kernel_error)?;
+    let resolved_guest = normalize_path(&resolved_guest);
+    let resolved_host = resolve_vm_guest_path_to_host(vm, &resolved_guest);
+
+    let header = vm
+        .kernel
+        .pread_file(&resolved_guest, 0, LINUX_BINPRM_BUF_SIZE)
+        .map_err(kernel_error)?;
+    if header.is_empty() {
+        return Err(SidecarError::Kernel(format!(
+            "ENOEXEC: cannot classify empty package entrypoint: {resolved_guest}"
+        )));
+    }
+
+    if header.starts_with(b"\0asm") {
+        return Ok(None);
+    }
+
+    if let Some(format) = detect_package_native_binary_format(&header) {
+        return Err(SidecarError::InvalidState(format!(
+            "ERR_NATIVE_BINARY_NOT_SUPPORTED: refused to execute native {} guest binary at {} inside the VM",
+            format.display_name(),
+            resolved_guest,
+        )));
+    }
+
+    let preview_len = header.len().min(16 * 1024);
+    let preview = String::from_utf8_lossy(&header[..preview_len]);
+
+    if header.starts_with(b"#!") {
+        let interpreter = parse_script_interpreter_name(&preview);
+        if interpreter.as_deref() == Some("node") {
+            return Ok(Some((resolved_guest, resolved_host)));
+        }
+        if matches!(interpreter.as_deref(), Some("python" | "python3")) {
+            return Ok(None);
+        }
+        if redirects_remaining > 0
+            && matches!(interpreter.as_deref(), Some("sh" | "bash" | "dash"))
+        {
+            if let Some(shim_target) = parse_node_shell_shim_target(&preview) {
+                let guest_parent = Path::new(&resolved_guest)
+                    .parent()
+                    .and_then(|path| path.to_str())
+                    .unwrap_or("/");
+                let shim_guest_entrypoint =
+                    normalize_path(&format!("{guest_parent}/{shim_target}"));
+                return classify_agentos_package_javascript_entrypoint(
+                    vm,
+                    &shim_guest_entrypoint,
+                    redirects_remaining - 1,
+                );
+            }
+        }
+        return Ok(None);
+    }
+
+    if is_probable_javascript_entrypoint(Path::new(&resolved_guest), &preview) {
+        return Ok(Some((resolved_guest, resolved_host)));
+    }
+
+    Err(SidecarError::Kernel(format!(
+        "ENOEXEC: exec format error: {resolved_guest}"
+    )))
 }
 
 /// Resolve the main module filename the same way Node does by default.
@@ -3774,16 +3876,15 @@ fn expand_host_access_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 /// Package content is tar-mounted guest-native and never materialized on the
-/// host, so command resolution classifies package-mount entrypoints by
-/// extension only (`resolve_javascript_command_entrypoint`) and the resolved
-/// host path for a WebAssembly module may not exist. Correct both here, where
-/// the kernel is available: sniff the real entrypoint's magic through the
-/// kernel VFS, flip misclassified extensionless WebAssembly binaries from
-/// JavaScript to WebAssembly, and stage the module bytes into the VM shadow
-/// tree so the wasm engine (which loads modules from a host path) can read
-/// them. Staging is per-VM and write-once per resolved version path — package
-/// versions are immutable — and only commands that actually execute are
-/// materialized; filesystem reads stay on the zero-extraction tar mount.
+/// host, so the resolved host path for a WebAssembly module may not exist.
+/// When resolve-time classification still lands on JavaScript, sniff the real
+/// entrypoint's magic through the kernel VFS here, flip misclassified
+/// extensionless WebAssembly binaries to WebAssembly, and stage the module bytes
+/// into the VM shadow tree so the wasm engine (which loads modules from a host
+/// path) can read them. Staging is per-VM and write-once per resolved version
+/// path — package versions are immutable — and only commands that actually
+/// execute are materialized; filesystem reads stay on the zero-extraction tar
+/// mount.
 pub(super) fn stage_agentos_package_command(
     vm: &mut VmState,
     resolved: &mut ResolvedChildProcessExecution,
@@ -4922,6 +5023,26 @@ where
     let phase_start = Instant::now();
     let mut resolved = resolve_execute_request(&mut vm, &payload)?;
     stage_agentos_package_command(&mut vm, &mut resolved)?;
+    if matches!(resolved.runtime, GuestRuntimeKind::WebAssembly) {
+        let mut spawn_request = JavascriptChildProcessSpawnRequest {
+            command: resolved.command.clone(),
+            args: resolved.execution_args.clone(),
+            options: Default::default(),
+        };
+        if rewrite_javascript_shebang_request(&mut vm, &resolved, &mut spawn_request)? {
+            let payload_env: BTreeMap<String, String> =
+                payload.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            resolved = resolve_command_execution(
+                &mut vm,
+                &spawn_request.command,
+                &spawn_request.args,
+                &payload_env,
+                payload.cwd.as_deref(),
+                payload.wasm_permission_tier,
+            )?;
+            stage_agentos_package_command(&mut vm, &mut resolved)?;
+        }
+    }
     let resolved = resolved;
     record_execute_phase("resolve_execute_request", phase_start.elapsed());
     let phase_start = Instant::now();
@@ -4951,16 +5072,23 @@ where
     } else {
         resolved.entrypoint.clone()
     };
-    let argv = std::iter::once(launch_entrypoint.clone())
-        .chain(resolved.execution_args.iter().cloned())
-        .collect::<Vec<_>>();
+    let kernel_command = match resolved.runtime {
+        GuestRuntimeKind::JavaScript => JAVASCRIPT_COMMAND,
+        GuestRuntimeKind::WebAssembly => WASM_COMMAND,
+        GuestRuntimeKind::Python => PYTHON_COMMAND,
+    };
+    let spawn_argv = if resolved.process_args.is_empty() {
+        vec![kernel_command.to_string()]
+    } else {
+        resolved.process_args.clone()
+    };
     record_execute_phase("env_argv_setup", phase_start.elapsed());
     let phase_start = Instant::now();
     let kernel_handle = vm
         .kernel
         .spawn_process(
-            &resolved.command,
-            argv,
+            kernel_command,
+            spawn_argv,
             SpawnOptions {
                 requester_driver: Some(String::from(EXECUTION_DRIVER_NAME)),
                 cwd: Some(resolved.guest_cwd.clone()),

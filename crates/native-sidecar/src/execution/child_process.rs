@@ -196,9 +196,9 @@ where
     const MAX_SHEBANG_REDIRECTS: usize = 4;
 
     let mut resolved = {
-        let vm = vms.get(vm_id).ok_or_else(|| missing_vm_error(vm_id))?;
+        let mut vm = vms.get_mut(vm_id).ok_or_else(|| missing_vm_error(vm_id))?;
         NativeSidecar::<B>::resolve_javascript_child_process_execution_with_mode(
-            &vm,
+            &mut vm,
             parent_env,
             parent_guest_cwd,
             parent_host_cwd,
@@ -221,9 +221,9 @@ where
             )));
         }
         resolved = {
-            let vm = vms.get(vm_id).ok_or_else(|| missing_vm_error(vm_id))?;
+            let mut vm = vms.get_mut(vm_id).ok_or_else(|| missing_vm_error(vm_id))?;
             NativeSidecar::<B>::resolve_javascript_child_process_execution_with_mode(
-                &vm,
+                &mut vm,
                 parent_env,
                 parent_guest_cwd,
                 parent_host_cwd,
@@ -3857,7 +3857,7 @@ where
 
     #[allow(dead_code)]
     pub(crate) fn resolve_javascript_child_process_execution(
-        vm: &VmState,
+        vm: &mut VmState,
         parent_env: &BTreeMap<String, String>,
         parent_guest_cwd: &str,
         parent_host_cwd: &Path,
@@ -3878,7 +3878,7 @@ where
     // are distinct security inputs, not interchangeable options.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn resolve_javascript_child_process_execution_with_mode(
-        vm: &VmState,
+        vm: &mut VmState,
         parent_env: &BTreeMap<String, String>,
         parent_guest_cwd: &str,
         parent_host_cwd: &Path,
@@ -4230,7 +4230,7 @@ where
                 .and_then(|name| vm.command_permissions.get(name).copied())
         });
         if let Some((javascript_guest_entrypoint, javascript_host_entrypoint)) =
-            resolve_javascript_command_entrypoint(vm, &guest_entrypoint, &host_entrypoint)
+            resolve_javascript_command_entrypoint(vm, &guest_entrypoint, &host_entrypoint)?
         {
             prepare_guest_runtime_env(
                 vm,
@@ -4290,9 +4290,9 @@ where
         const MAX_SHEBANG_REDIRECTS: usize = 4;
 
         let mut resolved = {
-            let vm = self.vms.get(vm_id).ok_or_else(|| missing_vm_error(vm_id))?;
+            let mut vm = self.vms.get_mut(vm_id).ok_or_else(|| missing_vm_error(vm_id))?;
             Self::resolve_javascript_child_process_execution_with_mode(
-                &vm,
+                &mut vm,
                 parent_env,
                 parent_guest_cwd,
                 parent_host_cwd,
@@ -4319,9 +4319,9 @@ where
                 )));
             }
             resolved = {
-                let vm = self.vms.get(vm_id).ok_or_else(|| missing_vm_error(vm_id))?;
+                let mut vm = self.vms.get_mut(vm_id).ok_or_else(|| missing_vm_error(vm_id))?;
                 Self::resolve_javascript_child_process_execution_with_mode(
-                    &vm,
+                    &mut vm,
                     parent_env,
                     parent_guest_cwd,
                     parent_host_cwd,
@@ -4466,9 +4466,9 @@ where
                     &mut request,
                 )?
             } else {
-                let vm = self.vms.get(vm_id).ok_or_else(|| missing_vm_error(vm_id))?;
+                let mut vm = self.vms.get_mut(vm_id).ok_or_else(|| missing_vm_error(vm_id))?;
                 Self::resolve_javascript_child_process_execution_with_mode(
-                    &vm,
+                    &mut vm,
                     &parent_env,
                     &parent_guest_cwd,
                     &parent_host_cwd,
@@ -5290,9 +5290,9 @@ where
         request.options.detached = false;
 
         let mut resolved = {
-            let vm = vms.get(vm_id).ok_or_else(|| missing_vm_error(vm_id))?;
+            let mut vm = vms.get_mut(vm_id).ok_or_else(|| missing_vm_error(vm_id))?;
             Self::resolve_javascript_child_process_execution_with_mode(
-                &vm,
+                &mut vm,
                 &BTreeMap::new(),
                 &guest_cwd,
                 &host_cwd,
@@ -6069,9 +6069,9 @@ where
                     &mut request,
                 )?
             } else {
-                let vm = vms.get(vm_id).ok_or_else(|| missing_vm_error(vm_id))?;
+                let mut vm = vms.get_mut(vm_id).ok_or_else(|| missing_vm_error(vm_id))?;
                 NativeSidecar::<B>::resolve_javascript_child_process_execution_with_mode(
-                    &vm,
+                    &mut vm,
                     &parent_env,
                     &parent_guest_cwd,
                     &parent_host_cwd,
