@@ -6516,8 +6516,13 @@ impl<F: VirtualFileSystem + 'static> KernelVm<F> {
             return Ok(Some(normalized));
         }
 
+        // This internal guard resolves through the unpermissioned layer: the
+        // write operation's own permission check enforces policy, and writing
+        // must not require fs.read on the target (Linux opens write-only files
+        // without read permission).
+        let filesystem = self.filesystem.inner();
         if follow_final_symlink {
-            if let Ok(resolved) = self.filesystem.realpath(&normalized) {
+            if let Ok(resolved) = filesystem.realpath(&normalized) {
                 return Ok(Some(resolved));
             }
         }
@@ -6536,7 +6541,7 @@ impl<F: VirtualFileSystem + 'static> KernelVm<F> {
             }
 
             raw_prefix = join_absolute_path(&raw_prefix, component);
-            match self.filesystem.realpath(&raw_prefix) {
+            match filesystem.realpath(&raw_prefix) {
                 Ok(resolved) => {
                     resolved_prefix = resolved;
                 }
