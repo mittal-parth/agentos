@@ -48,15 +48,27 @@ ${body}`,
 }
 
 function writeMinimalSidebar(root, pages = [{ title: "Home", href: "/agentos/docs" }]) {
+	mkdirSync(join(root, "docs"), { recursive: true });
 	writeFileSync(
 		join(root, "docs/sidebar.json"),
 		JSON.stringify({ docs: [{ title: "General", pages }] }),
 	);
 }
 
+function writeMinimalSecureExec(root) {
+	writePage(root, "secure-exec/docs/content/docs/index.mdx", "\n");
+	writeFileSync(
+		join(root, "secure-exec/docs/sidebar.json"),
+		JSON.stringify({
+			docs: [{ title: "Home", href: "/secure-exec/docs" }],
+		}),
+	);
+}
+
 function seedMinimalPassingTree(root) {
 	writePage(root, "docs/content/docs/index.mdx", "\n");
 	writeMinimalSidebar(root);
+	writeMinimalSecureExec(root);
 }
 
 test("passes valid bundle pages and ignores website-owned routes", () => {
@@ -86,6 +98,7 @@ test("passes valid bundle pages and ignores website-owned routes", () => {
 			"docs/content/docs/snippet.mdx",
 			'\n<CodeSnippet file="examples/docs/sample.ts" />\n',
 		);
+		writeMinimalSecureExec(root);
 
 		const result = runCheck(root);
 		assert.equal(result.status, 0, checkOutput(result));
@@ -104,6 +117,7 @@ test("fails when frontmatter block is missing", () => {
 			"# no frontmatter\n",
 		);
 		writeMinimalSidebar(root);
+		writeMinimalSecureExec(root);
 
 		assertFails(root, /missing frontmatter/);
 	} finally {
@@ -123,6 +137,7 @@ description: "Only description"
 `,
 		);
 		writeMinimalSidebar(root);
+		writeMinimalSecureExec(root);
 
 		assertFails(root, /frontmatter missing title/);
 	} finally {
@@ -142,6 +157,7 @@ title: "Only title"
 `,
 		);
 		writeMinimalSidebar(root);
+		writeMinimalSecureExec(root);
 
 		assertFails(root, /frontmatter missing description/);
 	} finally {
@@ -185,6 +201,7 @@ test("fails on broken anchor and passes valid anchor", () => {
 			"\nSee [nope](/agentos/docs/target#not-a-real-heading).\n",
 		);
 		writeMinimalSidebar(root);
+		writeMinimalSecureExec(root);
 
 		const out = checkOutput(assertFails(root, /broken anchor #not-a-real-heading/));
 		assert.doesNotMatch(out, /broken anchor #resource-limits/);
@@ -210,6 +227,7 @@ See [bad](#not-a-heading) and [collapsed](#sdk-snapshotting-snapshot-safety).
 `,
 		);
 		writeMinimalSidebar(root);
+		writeMinimalSecureExec(root);
 
 		const out = checkOutput(assertFails(root, /broken anchor #not-a-heading/));
 		assert.match(out, /broken anchor #sdk-snapshotting-snapshot-safety/);
@@ -232,6 +250,7 @@ test("resolves slug.mdx and nested index.mdx paths", () => {
 			"\n[flat](/agentos/docs/flat)\n[nested](/agentos/docs/nested/topic)\n",
 		);
 		writeMinimalSidebar(root);
+		writeMinimalSecureExec(root);
 
 		const result = runCheck(root);
 		assert.equal(result.status, 0, checkOutput(result));
@@ -257,6 +276,7 @@ test("validates integrations and use-cases collections", () => {
 				integrations: [{ title: "Flue", href: "/agentos/integrations/flue" }],
 			}),
 		);
+		writeMinimalSecureExec(root);
 
 		const result = runCheck(root);
 		assert.equal(result.status, 0, checkOutput(result));
@@ -339,11 +359,35 @@ export const b = 1;
 	}
 });
 
+test("fails when only one configured bundle is present", () => {
+	const root = mkdtempSync(join(tmpdir(), "agentos-docs-check-"));
+	try {
+		writePage(root, "docs/content/docs/index.mdx", "\n");
+		writeMinimalSidebar(root);
+
+		assertFails(root, /secure-exec\/docs\/ is missing/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("fails when a configured bundle directory is missing", () => {
+	const root = mkdtempSync(join(tmpdir(), "agentos-docs-check-"));
+	try {
+		const out = checkOutput(assertFails(root, /docs\/ is missing/));
+		assert.match(out, /secure-exec\/docs\/ is missing/);
+		assert.doesNotMatch(out, /check-docs: OK/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("fails when docs/content is missing", () => {
 	const root = mkdtempSync(join(tmpdir(), "agentos-docs-check-"));
 	try {
 		mkdirSync(join(root, "docs"), { recursive: true });
 		writeMinimalSidebar(root);
+		writeMinimalSecureExec(root);
 
 		assertFails(root, /docs\/content\/ is missing/);
 	} finally {
@@ -355,6 +399,7 @@ test("fails when docs/sidebar.json is missing", () => {
 	const root = mkdtempSync(join(tmpdir(), "agentos-docs-check-"));
 	try {
 		writePage(root, "docs/content/docs/index.mdx", "\n");
+		writeMinimalSecureExec(root);
 
 		assertFails(root, /docs\/sidebar\.json is missing/);
 	} finally {

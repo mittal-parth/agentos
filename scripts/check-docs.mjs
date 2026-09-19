@@ -193,8 +193,8 @@ let pageCount = 0;
 
 for (const bundle of BUNDLES) {
 	const docsDir = join(root, bundle.docsDir);
-	// Tests plant only the bundles they care about.
 	if (!existsSync(docsDir)) {
+		fail(`${bundle.docsDir}/ is missing`);
 		continue;
 	}
 	const contentRoot = join(docsDir, "content");
