@@ -148,9 +148,9 @@ shell *args:
 		NODE_OPTIONS="--no-deprecation ${NODE_OPTIONS:-}" \
 		pnpm --filter @rivet-dev/agentos-shell exec tsx src/main.ts "$@"
 
-# --- docs/ bundle (published on rivet.dev) ---
-# Source-level checks for docs/content and docs/sidebar.json. To preview rendered
-# pages locally, clone rivet-dev/website next to this repo (see docs/CLAUDE.md).
+# --- docs/ and secure-exec/docs/ bundles (published on rivet.dev) ---
+# Source-level checks for MDX, sidebar.json, and CodeSnippet paths. To preview
+# rendered pages locally, clone rivet-dev/website next to this repo (see docs/CLAUDE.md).
 
 docs-check:
 	node scripts/check-docs.mjs

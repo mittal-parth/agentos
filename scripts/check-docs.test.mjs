@@ -302,6 +302,43 @@ test("fails missing CodeSnippet file", () => {
 	}
 });
 
+test("fails when CodeSnippet region markers are missing or out of order", () => {
+	const root = mkdtempSync(join(tmpdir(), "agentos-docs-check-"));
+	try {
+		seedMinimalPassingTree(root);
+		mkdirSync(join(root, "examples"), { recursive: true });
+		writeFileSync(
+			join(root, "examples/regions.ts"),
+			`// docs:end backwards
+export const a = 1;
+// docs:start backwards
+`,
+		);
+		writeFileSync(
+			join(root, "examples/ok.ts"),
+			`// docs:start good
+export const b = 1;
+// docs:end good
+`,
+		);
+		writePage(
+			root,
+			"docs/content/docs/snippet-region.mdx",
+			`
+<CodeSnippet file="examples/ok.ts" region="good" />
+<CodeSnippet file="examples/ok.ts" region="does-not-exist" />
+<CodeSnippet file="examples/regions.ts" region="backwards" />
+`,
+		);
+
+		const out = checkOutput(assertFails(root, /region "does-not-exist" missing/));
+		assert.match(out, /region "backwards" end precedes start/);
+		assert.doesNotMatch(out, /region "good"/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("fails when docs/content is missing", () => {
 	const root = mkdtempSync(join(tmpdir(), "agentos-docs-check-"));
 	try {
@@ -320,6 +357,62 @@ test("fails when docs/sidebar.json is missing", () => {
 		writePage(root, "docs/content/docs/index.mdx", "\n");
 
 		assertFails(root, /docs\/sidebar\.json is missing/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("validates secure-exec docs and cross-product links", () => {
+	const root = mkdtempSync(join(tmpdir(), "agentos-docs-check-"));
+	try {
+		writePage(root, "docs/content/docs/index.mdx", "\n");
+		writeMinimalSidebar(root);
+		writePage(
+			root,
+			"secure-exec/docs/content/docs/index.mdx",
+			"\nSee [agentOS](/agentos/docs) and [vms](/secure-exec/docs/vms).\n",
+		);
+		writePage(root, "secure-exec/docs/content/docs/vms.mdx", "\n");
+		writeFileSync(
+			join(root, "secure-exec/docs/sidebar.json"),
+			JSON.stringify({
+				docs: [{ title: "Overview", href: "/secure-exec/docs" }],
+			}),
+		);
+		mkdirSync(join(root, "secure-exec/examples"), { recursive: true });
+		writeFileSync(join(root, "secure-exec/examples/sample.ts"), "export {};\n");
+		writePage(
+			root,
+			"secure-exec/docs/content/docs/snippet.mdx",
+			'\n<CodeSnippet file="secure-exec/examples/sample.ts" />\n',
+		);
+
+		const result = runCheck(root);
+		assert.equal(result.status, 0, checkOutput(result));
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("fails on a broken secure-exec link and sidebar href", () => {
+	const root = mkdtempSync(join(tmpdir(), "agentos-docs-check-"));
+	try {
+		writePage(
+			root,
+			"docs/content/docs/index.mdx",
+			"\n[bad](/secure-exec/docs/no-such-page)\n",
+		);
+		writeMinimalSidebar(root);
+		writePage(root, "secure-exec/docs/content/docs/index.mdx", "\n");
+		writeFileSync(
+			join(root, "secure-exec/docs/sidebar.json"),
+			JSON.stringify({
+				docs: [{ title: "Bad", href: "/secure-exec/docs/missing" }],
+			}),
+		);
+
+		const out = checkOutput(assertFails(root, /broken link.*no-such-page/));
+		assert.match(out, /secure-exec\/docs\/sidebar\.json: broken sidebar href/);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

@@ -257,9 +257,11 @@ custom host-syscall imports. Treat that target as **native POSIX**;
 - Runnable docs code must come from real checked example files via
   `<CodeSnippet>`. Inline code is fine only for shell commands, config
   fragments, or non-runnable examples.
-- Docs render in the website repo, not here. Validate a change by type-checking
-  the examples it embeds and previewing with a sibling website checkout as
-  described in `docs/CLAUDE.md`.
+- Validate docs changes with `just docs-check` or `pnpm check-docs` when
+  editing `docs/`, `secure-exec/docs/`, `docs/sidebar.json`,
+  `secure-exec/docs/sidebar.json`, or cross-page links under `/agentos/` and
+  `/secure-exec/`. To preview rendered pages, clone `rivet-dev/website` next
+  to this repo and follow `docs/CLAUDE.md`.
 
 ## Tests
 

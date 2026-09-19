@@ -1,10 +1,11 @@
 /**
- * Checks docs/content MDX and docs/sidebar.json:
+ * Checks each docs bundle (docs/ for agentOS, secure-exec/docs/ for Secure Exec):
  *   - every page has title + description frontmatter
- *   - /agentos/{docs,tutorials,integrations,use-cases} links resolve to an MDX file
+ *   - /{product}/{docs,tutorials,...} links resolve to an MDX file
  *   - #anchors match ## / ### headings (same-page and cross-page)
- *   - sidebar hrefs resolve (https:// and website-owned /agentos/* routes are skipped)
- *   - <CodeSnippet file="..."> paths exist at the repo root
+ *   - sidebar hrefs resolve (https:// and website-owned routes are skipped)
+ *   - <CodeSnippet file="..."> paths exist at the repo root, and region=
+ *     markers have a matching docs:start / docs:end pair
  * Does not compile MDX; theme components live in rivet-dev/website.
  */
 
@@ -12,14 +13,28 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Only these /agentos/<collection>/... paths map to files under docs/content/.
-// Other /agentos/* routes (registry, self-host, …) are owned by the website repo.
-const BUNDLE_COLLECTIONS = new Set([
-	"docs",
-	"tutorials",
-	"integrations",
-	"use-cases",
-]);
+const BUNDLES = [
+	{
+		product: "agentos",
+		docsDir: "docs",
+		collections: new Set(["docs", "tutorials", "integrations", "use-cases"]),
+	},
+	{
+		product: "secure-exec",
+		docsDir: "secure-exec/docs",
+		collections: new Set(["docs"]),
+	},
+];
+
+const PRODUCT_ALT = BUNDLES.map((bundle) => bundle.product).join("|");
+const MD_CROSS_LINK = new RegExp(
+	`\\]\\((/(?:${PRODUCT_ALT})/[^)\\s#]+)(#[^)\\s]+)?\\)`,
+	"g",
+);
+const HREF_CROSS_LINK = new RegExp(
+	`href="(/(?:${PRODUCT_ALT})/[^"#]+)(#[^"]+)?"`,
+	"g",
+);
 
 // `--root` lets tests point the checker at a temp tree instead of this repo.
 const argv = process.argv.slice(2);
@@ -35,9 +50,6 @@ const fail = (message) => failures.push(message);
 const rel = (path) => relative(root, path).split(sep).join("/");
 /** Convert a string index into a 1-based line number. */
 const lineNumberAt = (text, index) => text.slice(0, index).split("\n").length;
-
-const docsRoot = join(root, "docs");
-const contentRoot = join(docsRoot, "content");
 
 /** Heading text to slug: "Foo & Bar" → "foo--bar". */
 const slugifyHeading = (text) =>
@@ -69,24 +81,24 @@ function walkMdx(dir, visit) {
 
 /**
  * Map a site path like /agentos/docs/quickstart to an MDX file on disk.
- * Returns { path }, { missing }, or { skip } for routes this bundle does not own.
+ * Returns { path }, { missing }, or { skip } when the href is not part
+ * of a bundle we own (e.g. /agentos/registry).
  */
 function hrefToMdxPath(hrefPath) {
-	if (!hrefPath.startsWith("/agentos/")) {
+	const parts = hrefPath.replace(/\/+$/, "").split("/").filter(Boolean);
+	if (parts.length < 2) {
 		return { skip: true };
 	}
-	const rest = hrefPath.slice("/agentos/".length).replace(/\/+$/, "");
-	const parts = rest.split("/").filter(Boolean);
-	if (parts.length === 0) {
+	const bundle = BUNDLES.find((entry) => entry.product === parts[0]);
+	if (!bundle) {
 		return { skip: true };
 	}
-	const collection = parts[0];
-	// /agentos/registry and similar live in the website repo, not here.
-	if (!BUNDLE_COLLECTIONS.has(collection)) {
+	const collection = parts[1];
+	if (!bundle.collections.has(collection)) {
 		return { skip: true };
 	}
-	const slugParts = parts.slice(1);
-	const baseDir = join(contentRoot, collection);
+	const slugParts = parts.slice(2);
+	const baseDir = join(root, bundle.docsDir, "content", collection);
 	let candidates;
 	if (slugParts.length === 0) {
 		candidates = [join(baseDir, "index.mdx")];
@@ -123,8 +135,8 @@ function checkFragment(sourcePath, line, targetText, fragment, suffix) {
 }
 
 /**
- * Check one /agentos/... URL found in sourcePath.
- * skip = another product's route (e.g. /agentos/registry); ignore it.
+ * Check one in-repo product URL found in sourcePath.
+ * skip = a route this repo does not own (e.g. /agentos/registry); ignore it.
  * missing = this bundle should have that page, but the MDX file is gone.
  * If the URL has #fragment, also require that heading on the target page.
  */
@@ -148,11 +160,11 @@ function checkCrossPage(sourcePath, sourceText, line, pathPart, fragment) {
 	}
 }
 
-/** Recursively check every href in sidebar.json. */
-function walkSidebar(node) {
+/** Recursively check every href in a sidebar.json. */
+function walkSidebar(node, sidebarRel) {
 	if (Array.isArray(node)) {
 		for (const item of node) {
-			walkSidebar(item);
+			walkSidebar(item, sidebarRel);
 		}
 		return;
 	}
@@ -169,20 +181,30 @@ function walkSidebar(node) {
 			return;
 		}
 		if (resolved.missing) {
-			fail(`docs/sidebar.json: broken sidebar href ${href}`);
+			fail(`${sidebarRel}: broken sidebar href ${href}`);
 		}
 	}
 	for (const value of Object.values(node)) {
-		walkSidebar(value);
+		walkSidebar(value, sidebarRel);
 	}
 }
 
 let pageCount = 0;
 
-if (!existsSync(contentRoot)) {
-	fail("docs/content/ is missing");
-} else {
-	// Scan every docs page.
+for (const bundle of BUNDLES) {
+	const docsDir = join(root, bundle.docsDir);
+	// Tests plant only the bundles they care about.
+	if (!existsSync(docsDir)) {
+		continue;
+	}
+	const contentRoot = join(docsDir, "content");
+	const sidebarPath = join(docsDir, "sidebar.json");
+	if (!existsSync(contentRoot)) {
+		fail(`${bundle.docsDir}/content/ is missing`);
+		continue;
+	}
+
+	// Scan every docs page in this bundle.
 	walkMdx(contentRoot, (mdxPath) => {
 		pageCount += 1;
 		const text = readFileSync(mdxPath, "utf8");
@@ -200,10 +222,8 @@ if (!existsSync(contentRoot)) {
 			}
 		}
 
-		// Links to other /agentos pages must point at a real MDX file, including any #anchor.
-		for (const match of text.matchAll(
-			/\]\((\/agentos\/[^)\s#]+)(#[^)\s]+)?\)/g,
-		)) {
+		// Links to other product docs pages must point at a real MDX file, including any #anchor.
+		for (const match of text.matchAll(MD_CROSS_LINK)) {
 			checkCrossPage(
 				mdxPath,
 				text,
@@ -212,8 +232,8 @@ if (!existsSync(contentRoot)) {
 				match[2]?.slice(1) ?? "",
 			);
 		}
-		// Same check for href="/agentos/..." on cards and other MDX components.
-		for (const match of text.matchAll(/href="(\/agentos\/[^"#]+)(#[^"]+)?"/g)) {
+		// Same check for href="/agentos/..." and href="/secure-exec/..." on MDX components.
+		for (const match of text.matchAll(HREF_CROSS_LINK)) {
 			checkCrossPage(
 				mdxPath,
 				text,
@@ -234,21 +254,52 @@ if (!existsSync(contentRoot)) {
 		}
 
 		// Embedded example files in <CodeSnippet> must exist in the repo.
-		for (const match of text.matchAll(/<CodeSnippet\s+[^>]*file="([^"]+)"/g)) {
-			if (!existsSync(join(root, match[1]))) {
+		// If the snippet names a region, the file must have matching docs:start / docs:end markers in order.
+		for (const match of text.matchAll(/<CodeSnippet\s+([^>]*)>/g)) {
+			const attrs = match[1];
+			const file = /\bfile="([^"]+)"/.exec(attrs)?.[1];
+			if (!file) {
+				continue;
+			}
+			const line = lineNumberAt(text, match.index);
+			const full = join(root, file);
+			if (!existsSync(full)) {
+				fail(`${rel(mdxPath)}:${line}: CodeSnippet file missing: ${file}`);
+				continue;
+			}
+			const region = /\bregion="([^"]+)"/.exec(attrs)?.[1];
+			if (!region) {
+				continue;
+			}
+			let startLine = -1;
+			let endLine = -1;
+			for (const [index, sourceLine] of readFileSync(full, "utf8").split("\n").entries()) {
+				const startName = /docs:start\s+(\S+)/.exec(sourceLine)?.[1];
+				if (startLine < 0 && startName === region) {
+					startLine = index;
+				}
+				const endName = /docs:end\s+(\S+)/.exec(sourceLine)?.[1];
+				if (endLine < 0 && endName === region) {
+					endLine = index;
+				}
+			}
+			if (startLine < 0 || endLine < 0) {
 				fail(
-					`${rel(mdxPath)}:${lineNumberAt(text, match.index)}: CodeSnippet file missing: ${match[1]}`,
+					`${rel(mdxPath)}:${line}: CodeSnippet region "${region}" missing in ${file}`,
+				);
+			} else if (startLine >= endLine) {
+				fail(
+					`${rel(mdxPath)}:${line}: CodeSnippet region "${region}" end precedes start in ${file}`,
 				);
 			}
 		}
 	});
-}
 
-const sidebarPath = join(docsRoot, "sidebar.json");
-if (!existsSync(sidebarPath)) {
-	fail("docs/sidebar.json is missing");
-} else if (existsSync(contentRoot)) {
-	walkSidebar(JSON.parse(readFileSync(sidebarPath, "utf8")));
+	if (!existsSync(sidebarPath)) {
+		fail(`${bundle.docsDir}/sidebar.json is missing`);
+	} else {
+		walkSidebar(JSON.parse(readFileSync(sidebarPath, "utf8")), `${bundle.docsDir}/sidebar.json`);
+	}
 }
 
 if (failures.length > 0) {
