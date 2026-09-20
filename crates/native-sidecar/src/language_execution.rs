@@ -4,6 +4,7 @@
 //! place that lowers them to the process transport used by the execution
 //! engines; clients never construct runtime or package-manager commands.
 
+use crate::execution::resolve_execution_cwds;
 use crate::protocol::*;
 use crate::service::{
     normalize_path, DispatchResult, NativeSidecar, RequestCompletionEffects, SidecarError,
@@ -553,15 +554,11 @@ fn lowered_install(
     }
 }
 
-fn resolve_inline_guest_file_path(
-    file_path: &str,
-    operation_cwd: Option<&str>,
-    guest_cwd: &str,
-) -> String {
+fn resolve_inline_guest_file_path(file_path: &str, guest_cwd: &str) -> String {
     if file_path.starts_with('/') {
         normalize_path(file_path)
     } else {
-        let base = operation_cwd.unwrap_or(guest_cwd).trim_end_matches('/');
+        let base = guest_cwd.trim_end_matches('/');
         normalize_path(&format!("{base}/{file_path}"))
     }
 }
@@ -1372,11 +1369,15 @@ where
                 .vms
                 .get_mut(&vm_id)
                 .ok_or_else(|| SidecarError::InvalidState(format!("unknown sidecar VM {vm_id}")))?;
+            let (guest_cwd, _, _) = resolve_execution_cwds(&vm, operation.cwd.as_deref());
             let guest_path = if requested_path.starts_with('/') {
                 normalize_path(&requested_path)
             } else {
-                let cwd = operation.cwd.as_deref().unwrap_or(&vm.guest_cwd);
-                normalize_path(&format!("{}/{requested_path}", cwd.trim_end_matches('/')))
+                normalize_path(&format!(
+                    "{}/{}",
+                    guest_cwd.trim_end_matches('/'),
+                    requested_path
+                ))
             };
             let source = vm.kernel.read_file(&guest_path).map_err(|error| {
                 SidecarError::InvalidState(format!(
@@ -1403,20 +1404,17 @@ where
         }
 
         if operation.env.contains_key(INLINE_FILE_PATH_ENV) {
-            let guest_cwd = self
+            let vm = self
                 .vms
                 .get(&vm_id)
-                .ok_or_else(|| SidecarError::InvalidState(format!("unknown sidecar VM {vm_id}")))?
-                .guest_cwd
-                .clone();
-            let operation_cwd = operation.cwd.as_deref();
+                .ok_or_else(|| SidecarError::InvalidState(format!("unknown sidecar VM {vm_id}")))?;
+            let (guest_cwd, _, _) = resolve_execution_cwds(&vm, operation.cwd.as_deref());
             let inline_path = operation
                 .env
                 .get(INLINE_FILE_PATH_ENV)
                 .expect("inline file path env checked above")
                 .clone();
-            let resolved =
-                resolve_inline_guest_file_path(&inline_path, operation_cwd, &guest_cwd);
+            let resolved = resolve_inline_guest_file_path(&inline_path, &guest_cwd);
             operation
                 .env
                 .insert(String::from(INLINE_FILE_PATH_ENV), resolved.clone());

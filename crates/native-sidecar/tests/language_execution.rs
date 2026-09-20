@@ -2,6 +2,7 @@ mod support;
 
 use agentos_native_sidecar::wire;
 use std::collections::HashMap;
+use std::fs;
 use std::time::{Duration, Instant};
 use support::{
     assert_node_available, authenticate_wire, create_vm_wire, create_vm_wire_with_metadata,
@@ -1479,6 +1480,8 @@ fn javascript_inline_and_file_module_import_resolve_cwd_node_modules() {
     let connection_id = authenticate_wire(&mut sidecar, "cwd-import-connection");
     let session_id = open_session_wire(&mut sidecar, 2, &connection_id);
     let host_cwd = temp_dir("language-execution-cwd-import-host");
+    let host_workspace = host_cwd.join("workspace");
+    fs::create_dir_all(&host_workspace).expect("create host workspace directory");
     let (vm_id, _) = create_vm_wire(
         &mut sidecar,
         3,
@@ -1572,6 +1575,68 @@ if (mod.default !== "{FIXTURE_MARKER}") throw new Error("unexpected inline execu
         &execution_id,
     );
     assert_eq!(execution_result.outcome, wire::ExecutionOutcome::Succeeded);
+
+    // Same checks when the client passes a host path beneath vm.host_cwd.
+    let mut host_process = process.clone();
+    host_process.cwd = Some(host_workspace.to_string_lossy().into_owned());
+    let host_evaluation = sidecar
+        .dispatch_wire_blocking(wire_request(
+            10,
+            wire_vm(&connection_id, &session_id, &vm_id),
+            wire::RequestPayload::JavaScriptEvaluationRequest(wire::JavaScriptEvaluationRequest {
+                process: host_process.clone(),
+                expression: format!(r#"(await import("{FIXTURE_PKG}")).default"#),
+                format: Some(wire::JavaScriptModuleFormat::Module),
+                file_path: None,
+                inputs: None,
+            }),
+        ))
+        .expect("start inline module evaluation with host cwd");
+    let host_evaluation_id = accepted_execution_id(host_evaluation);
+    let host_evaluation_result = wait_for_execution(
+        &mut sidecar,
+        &connection_id,
+        &session_id,
+        &vm_id,
+        &host_evaluation_id,
+    );
+    assert_eq!(
+        host_evaluation_result.outcome,
+        wire::ExecutionOutcome::Succeeded
+    );
+    assert_eq!(
+        host_evaluation_result.evaluation_value.as_deref(),
+        Some(r#""inline-import-ok""#)
+    );
+
+    let host_execution = sidecar
+        .dispatch_wire_blocking(wire_request(
+            11,
+            wire_vm(&connection_id, &session_id, &vm_id),
+            wire::RequestPayload::JavaScriptExecutionRequest(wire::JavaScriptExecutionRequest {
+                process: host_process,
+                source: format!(
+                    r#"const mod = await import("{FIXTURE_PKG}");
+if (mod.default !== "{FIXTURE_MARKER}") throw new Error("unexpected host cwd inline execution import");"#
+                ),
+                format: Some(wire::JavaScriptModuleFormat::Module),
+                file_path: None,
+                inputs: None,
+            }),
+        ))
+        .expect("start inline module execution with host cwd");
+    let host_execution_id = accepted_execution_id(host_execution);
+    let host_execution_result = wait_for_execution(
+        &mut sidecar,
+        &connection_id,
+        &session_id,
+        &vm_id,
+        &host_execution_id,
+    );
+    assert_eq!(
+        host_execution_result.outcome,
+        wire::ExecutionOutcome::Succeeded
+    );
 
     write_guest_utf8_file(
         &mut sidecar,
