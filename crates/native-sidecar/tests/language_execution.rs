@@ -1466,7 +1466,7 @@ fn write_guest_utf8_file(
     }
 }
 
-/// Omitted inline `filePath` must resolve ESM `import()` 
+/// Omitted inline `filePath` must resolve ESM `import()`
 /// from the guest working directory, not from `/`.
 #[test]
 fn javascript_inline_and_file_module_import_resolve_cwd_node_modules() {
